@@ -4,6 +4,7 @@
 package main
 
 import (
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -24,6 +25,7 @@ func main() {
 	textArt := flag.Bool("t", false, "print as text-art on stdout")
 	negative := flag.Bool("i", false, "invert black and white")
 	disableBorder := flag.Bool("d", false, "disable QR Code border")
+	inputFile := flag.String("f", "", "read input from file, hex-encode bytes to text before generating QR")
 	splitLong := flag.Bool("split-long", false, "split long content into multiple QR codes when necessary")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, `qrcode -- QR Code encoder in Go
@@ -48,12 +50,11 @@ Usage:
 	}
 	flag.Parse()
 
-	if len(flag.Args()) == 0 {
+	content, err := loadContent(flag.Args(), *inputFile)
+	if err != nil {
 		flag.Usage()
-		checkError(fmt.Errorf("Error: no content given"))
+		checkError(err)
 	}
-
-	content := strings.Join(flag.Args(), " ")
 
 	q, err := prepareQRCode(content, *disableBorder)
 
@@ -201,4 +202,24 @@ func writeFile(filename string, data []byte) error {
 
 	_, err = fh.Write(data)
 	return err
+}
+
+func loadContent(args []string, inputFile string) (string, error) {
+	if inputFile == "" {
+		if len(args) == 0 {
+			return "", fmt.Errorf("Error: no content given")
+		}
+		return strings.Join(args, " "), nil
+	}
+
+	if len(args) > 0 {
+		return "", fmt.Errorf("Error: use either -f or arguments, not both")
+	}
+
+	data, err := os.ReadFile(inputFile)
+	if err != nil {
+		return "", err
+	}
+
+	return hex.EncodeToString(data), nil
 }

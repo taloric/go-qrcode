@@ -80,3 +80,40 @@ func TestSplitAndWriteCreatesNumberedFiles(t *testing.T) {
 		t.Fatalf("unexpected number of files written: got %d, want %d", len(files), len(expected))
 	}
 }
+
+func TestLoadContentFromFileHex(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bin")
+	data := []byte{0x00, 0xff, 0x10}
+
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatalf("write temp file failed: %v", err)
+	}
+
+	content, err := loadContent(nil, path)
+	if err != nil {
+		t.Fatalf("loadContent returned error: %v", err)
+	}
+
+	if content != "00ff10" {
+		t.Fatalf("hex encoding mismatch, got %s", content)
+	}
+}
+
+func TestLoadContentConflicts(t *testing.T) {
+	t.Parallel()
+
+	if _, err := loadContent([]string{"foo"}, "bar"); err == nil {
+		t.Fatalf("expected error when both args and file provided")
+	}
+}
+
+func TestLoadContentNoInput(t *testing.T) {
+	t.Parallel()
+
+	if _, err := loadContent(nil, ""); err == nil {
+		t.Fatalf("expected error when no input provided")
+	}
+}

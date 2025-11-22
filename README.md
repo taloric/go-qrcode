@@ -51,6 +51,8 @@ https://github.com/skip2/go-qrcode
 
 Flags:
   -d	disable QR Code border
+  -f string
+    	read input from file, hex-encode bytes to text before generating QR
   -i	invert black and white
   -o string
     	out PNG file prefix, empty for stdout
@@ -75,6 +77,11 @@ Usage:
 
        qrcode -o out -split-long "$(cat bigfile.txt)"
        # Produces out-0.png, out-1.png, ...
+
+  4. Encode any file as hex text first:
+
+       qrcode -o firmware -f firmware.bin
+       # firmware-0.png, firmware-1.png, ...
 
 ```
 ## Maximum capacity
