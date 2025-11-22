@@ -56,6 +56,8 @@ Flags:
     	out PNG file prefix, empty for stdout
   -s int
     	image size (pixel) (default 256)
+  -split-long
+    	split content that exceeds the QR capacity into numbered files (requires -o)
   -t	print as text-art on stdout
 
 Usage:
@@ -68,6 +70,11 @@ Usage:
   2. Save to file if "display" not available:
 
        qrcode "homepage: https://github.com/skip2/go-qrcode" > out.png
+
+  3. Automatically split long content into multiple QR images:
+
+       qrcode -o out -split-long "$(cat bigfile.txt)"
+       # Produces out-0.png, out-1.png, ...
 
 ```
 ## Maximum capacity

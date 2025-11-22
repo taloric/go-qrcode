@@ -4,6 +4,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -12,12 +13,18 @@ import (
 	qrcode "github.com/skip2/go-qrcode"
 )
 
+const (
+	defaultRecoveryLevel = qrcode.Highest
+	contentTooLongErrMsg = "content too long to encode"
+)
+
 func main() {
 	outFile := flag.String("o", "", "out PNG file prefix, empty for stdout")
 	size := flag.Int("s", 256, "image size (pixel)")
 	textArt := flag.Bool("t", false, "print as text-art on stdout")
 	negative := flag.Bool("i", false, "invert black and white")
 	disableBorder := flag.Bool("d", false, "disable QR Code border")
+	splitLong := flag.Bool("split-long", false, "split long content into multiple QR codes when necessary")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, `qrcode -- QR Code encoder in Go
 https://github.com/skip2/go-qrcode
@@ -48,38 +55,29 @@ Usage:
 
 	content := strings.Join(flag.Args(), " ")
 
-	var err error
-	var q *qrcode.QRCode
-	q, err = qrcode.New(content, qrcode.Highest)
-	checkError(err)
+	q, err := prepareQRCode(content, *disableBorder)
 
-	if *disableBorder {
-		q.DisableBorder = true
-	}
+	if err == nil {
+		if *textArt {
+			art := q.ToString(*negative)
+			fmt.Println(art)
+			return
+		}
 
-	if *textArt {
-		art := q.ToString(*negative)
-		fmt.Println(art)
+		if *negative {
+			q.ForegroundColor, q.BackgroundColor = q.BackgroundColor, q.ForegroundColor
+		}
+
+		checkError(writeSingleCode(q, *size, *outFile))
 		return
 	}
 
-	if *negative {
-		q.ForegroundColor, q.BackgroundColor = q.BackgroundColor, q.ForegroundColor
+	if *splitLong && isContentTooLong(err) {
+		checkError(splitAndWrite(content, *size, *outFile, *disableBorder, *negative, *textArt))
+		return
 	}
 
-	var png []byte
-	png, err = q.PNG(*size)
 	checkError(err)
-
-	if *outFile == "" {
-		os.Stdout.Write(png)
-	} else {
-		var fh *os.File
-		fh, err = os.Create(*outFile + ".png")
-		checkError(err)
-		defer fh.Close()
-		fh.Write(png)
-	}
 }
 
 func checkError(err error) {
@@ -87,4 +85,120 @@ func checkError(err error) {
 		fmt.Fprintf(os.Stderr, "%s\n", err)
 		os.Exit(1)
 	}
+}
+
+func prepareQRCode(content string, disableBorder bool) (*qrcode.QRCode, error) {
+	q, err := qrcode.New(content, defaultRecoveryLevel)
+	if err != nil {
+		return nil, err
+	}
+
+	if disableBorder {
+		q.DisableBorder = true
+	}
+
+	return q, nil
+}
+
+func writeSingleCode(q *qrcode.QRCode, size int, outFile string) error {
+	png, err := q.PNG(size)
+	if err != nil {
+		return err
+	}
+
+	if outFile == "" {
+		_, err = os.Stdout.Write(png)
+		return err
+	}
+
+	return writeFile(outFile+".png", png)
+}
+
+func splitAndWrite(content string, size int, outPrefix string, disableBorder, negative, textArt bool) error {
+	if textArt {
+		return errors.New("split-long does not support text-art output")
+	}
+
+	if outPrefix == "" {
+		return errors.New("split-long requires an output file prefix via -o")
+	}
+
+	contentRunes := []rune(content)
+	chunkIndex := 0
+
+	for len(contentRunes) > 0 {
+		chunkLen, err := maxEncodablePrefix(contentRunes)
+		if err != nil {
+			return err
+		}
+
+		chunk := string(contentRunes[:chunkLen])
+		contentRunes = contentRunes[chunkLen:]
+
+		q, err := prepareQRCode(chunk, disableBorder)
+		if err != nil {
+			return err
+		}
+
+		if negative {
+			q.ForegroundColor, q.BackgroundColor = q.BackgroundColor, q.ForegroundColor
+		}
+
+		png, err := q.PNG(size)
+		if err != nil {
+			return err
+		}
+
+		filename := fmt.Sprintf("%s-%d.png", outPrefix, chunkIndex)
+		if err := writeFile(filename, png); err != nil {
+			return err
+		}
+
+		chunkIndex++
+	}
+
+	return nil
+}
+
+func maxEncodablePrefix(content []rune) (int, error) {
+	low, high := 1, len(content)
+	best := 0
+
+	for low <= high {
+		mid := (low + high) / 2
+		_, err := qrcode.New(string(content[:mid]), defaultRecoveryLevel)
+
+		if err == nil {
+			best = mid
+			low = mid + 1
+			continue
+		}
+
+		if !isContentTooLong(err) {
+			return 0, err
+		}
+
+		high = mid - 1
+	}
+
+	if best == 0 {
+		return 0, errors.New("content segment too long to encode")
+	}
+
+	return best, nil
+}
+
+func isContentTooLong(err error) bool {
+	return err != nil && err.Error() == contentTooLongErrMsg
+}
+
+func writeFile(filename string, data []byte) error {
+	fh, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	defer fh.Close()
+
+	_, err = fh.Write(data)
+	return err
 }
