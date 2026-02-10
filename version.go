@@ -3048,3 +3048,16 @@ func getQRCodeVersion(level RecoveryLevel, version int) *qrCodeVersion {
 
 	return nil
 }
+
+// MaxByteCapacity returns the maximum number of bytes encodable in a single
+// QR code at the given recovery level, using byte-mode encoding at Version 40
+// (the largest QR code version).
+func MaxByteCapacity(level RecoveryLevel) int {
+	v := getQRCodeVersion(level, 40)
+	if v == nil {
+		return 0
+	}
+	// Byte mode overhead for v27-40: 4 bits (mode indicator) + 16 bits (char count)
+	const byteOverheadBits = 4 + 16
+	return (v.numDataBits() - byteOverheadBits) / 8
+}
