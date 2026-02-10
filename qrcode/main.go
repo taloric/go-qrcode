@@ -4,23 +4,19 @@
 package main
 
 import (
+	"bytes"
 	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
-	"image"
-	"image/color"
 	_ "image/jpeg"
 	_ "image/png"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
 	qrcode "github.com/skip2/go-qrcode"
-
-	"github.com/makiuchi-d/gozxing"
-	gozxingqr "github.com/makiuchi-d/gozxing/qrcode"
-	xdraw "golang.org/x/image/draw"
 )
 
 const defaultRecoveryLevel = qrcode.Highest
@@ -58,7 +54,7 @@ Usage:
 
        qrcode -f data.csv -split-long -o output
 
-  4. Decode QR codes from a file or directory:
+  4. Decode QR codes from a file or directory (requires zbarimg installed):
 
        qrcode -decode ./output-dir
        qrcode -decode image.png
@@ -194,11 +190,9 @@ func decodePNG(path string) error {
 }
 
 func decodePNGFile(path string) error {
-	reader := gozxingqr.NewQRCodeReader()
-	text, err := decodeQRFile(reader, path)
+	text, err := zbarimgDecode(path)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "ERROR: %s\n%v\n", filepath.Base(path), err)
-		return err
+		return fmt.Errorf("decode %s: %w", filepath.Base(path), err)
 	}
 	base := strings.TrimSuffix(path, filepath.Ext(path))
 	txtPath := base + ".txt"
@@ -215,13 +209,8 @@ func decodePNGDir(dir string) error {
 		return fmt.Errorf("cannot read directory %s: %w", dir, err)
 	}
 
-	reader := gozxingqr.NewQRCodeReader()
 	decoded := 0
 	failed := 0
-	var failedFiles []struct {
-		name string
-		err  error
-	}
 
 	for _, entry := range entries {
 		if entry.IsDir() {
@@ -234,13 +223,9 @@ func decodePNGDir(dir string) error {
 		}
 
 		imgPath := filepath.Join(dir, name)
-		text, err := decodeQRFile(reader, imgPath)
+		text, err := zbarimgDecode(imgPath)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to decode %s:\n%v\n", name, err)
-			failedFiles = append(failedFiles, struct {
-				name string
-				err  error
-			}{name, err})
+			fmt.Fprintf(os.Stderr, "warning: failed to decode %s: %v\n", name, err)
 			failed++
 			continue
 		}
@@ -255,168 +240,27 @@ func decodePNGDir(dir string) error {
 		decoded++
 	}
 
-	// Generate failure report if there are failed files
-	if len(failedFiles) > 0 {
-		reportPath := filepath.Join(dir, "decode-failed.txt")
-		var report strings.Builder
-		report.WriteString(fmt.Sprintf("QR Code Decode Failure Report\n"))
-		report.WriteString(fmt.Sprintf("Generated: %s\n", filepath.Base(dir)))
-		report.WriteString(fmt.Sprintf("Total Failed: %d\n\n", len(failedFiles)))
-		report.WriteString(strings.Repeat("=", 80) + "\n\n")
-
-		for i, f := range failedFiles {
-			report.WriteString(fmt.Sprintf("[%d] File: %s\n", i+1, f.name))
-			report.WriteString(fmt.Sprintf("Error:\n%v\n", f.err))
-			report.WriteString(strings.Repeat("-", 80) + "\n\n")
-		}
-
-		if err := os.WriteFile(reportPath, []byte(report.String()), 0644); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to write failure report: %v\n", err)
-		} else {
-			fmt.Fprintf(os.Stderr, "\nFailure report written to: %s\n", reportPath)
-		}
-	}
-
 	fmt.Fprintf(os.Stderr, "Done: %d decoded, %d failed\n", decoded, failed)
 	return nil
 }
 
-type decodeAttempt struct {
-	strategy string
-	width    int
-	height   int
-	err      error
-}
+// zbarimgDecode decodes a QR code from an image file using zbarimg.
+// Requires zbarimg installed (apt: zbar-tools, brew: zbar).
+func zbarimgDecode(path string) (string, error) {
+	cmd := exec.Command("zbarimg", "--quiet", "--raw", "-Sdisable", "-Sqrcode.enable", path)
+	var out bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &stderr
 
-func tryDecodeWithStrategies(reader gozxing.Reader, img image.Image) (string, []decodeAttempt, error) {
-	var attempts []decodeAttempt
-	bounds := img.Bounds()
-	origW, origH := bounds.Dx(), bounds.Dy()
-
-	// Strategy 1: Try original size
-	if text, err := tryDecode(reader, img); err == nil {
-		attempts = append(attempts, decodeAttempt{"original", origW, origH, nil})
-		return text, attempts, nil
-	} else {
-		attempts = append(attempts, decodeAttempt{"original", origW, origH, err})
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("zbarimg: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
 	}
 
-	// Strategy 2-6: Try different scale factors
-	for _, factor := range []int{2, 3, 4, 5} {
-		scaled := scaleImageByFactor(img, factor)
-		w, h := scaled.Bounds().Dx(), scaled.Bounds().Dy()
-		strategy := fmt.Sprintf("scale %dx", factor)
-
-		if text, err := tryDecode(reader, scaled); err == nil {
-			attempts = append(attempts, decodeAttempt{strategy, w, h, nil})
-			return text, attempts, nil
-		} else {
-			attempts = append(attempts, decodeAttempt{strategy, w, h, err})
-		}
-
-		// Try enhanced version
-		enhanced := enhanceImage(scaled)
-		strategyEnh := fmt.Sprintf("scale %dx + enhance", factor)
-		if text, err := tryDecode(reader, enhanced); err == nil {
-			attempts = append(attempts, decodeAttempt{strategyEnh, w, h, nil})
-			return text, attempts, nil
-		} else {
-			attempts = append(attempts, decodeAttempt{strategyEnh, w, h, err})
-		}
-	}
-
-	return "", attempts, fmt.Errorf("all decode strategies failed")
-}
-
-func tryDecode(reader gozxing.Reader, img image.Image) (string, error) {
-	bmp, err := gozxing.NewBinaryBitmapFromImage(img)
-	if err != nil {
-		return "", err
-	}
-	result, err := reader.Decode(bmp, nil)
-	if err != nil {
-		return "", err
-	}
-	return result.GetText(), nil
-}
-
-func decodeQRFile(reader gozxing.Reader, path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-
-	img, _, err := image.Decode(f)
-	if err != nil {
-		return "", fmt.Errorf("image decode: %w", err)
-	}
-
-	text, attempts, err := tryDecodeWithStrategies(reader, img)
-	if err != nil {
-		// Build detailed error message
-		var errMsg strings.Builder
-		errMsg.WriteString(fmt.Sprintf("failed after %d attempts:\n", len(attempts)))
-		for i, attempt := range attempts {
-			errMsg.WriteString(fmt.Sprintf("  [%d] %s (%dx%d): %v\n", i+1, attempt.strategy, attempt.width, attempt.height, attempt.err))
-		}
-		return "", fmt.Errorf("%s", errMsg.String())
-	}
-
-	return text, nil
-}
-
-// scaleUpForDecode scales up small QR code images for reliable decoding.
-// Version 40 QR codes have 177x177 modules; gozxing needs ~3px/module minimum.
-func scaleUpForDecode(img image.Image) image.Image {
-	bounds := img.Bounds()
-	w, h := bounds.Dx(), bounds.Dy()
-	const minDim = 2048
-	if w >= minDim && h >= minDim {
-		return img
-	}
-	scale := (minDim + w - 1) / w
-	if s := (minDim + h - 1) / h; s > scale {
-		scale = s
-	}
-	newW, newH := w*scale, h*scale
-	dst := image.NewRGBA(image.Rect(0, 0, newW, newH))
-	xdraw.NearestNeighbor.Scale(dst, dst.Bounds(), img, bounds, xdraw.Over, nil)
-	return dst
-}
-
-// scaleImageByFactor scales an image by a specific factor.
-func scaleImageByFactor(img image.Image, factor int) image.Image {
-	if factor <= 1 {
-		return img
-	}
-	bounds := img.Bounds()
-	w, h := bounds.Dx(), bounds.Dy()
-	newW, newH := w*factor, h*factor
-	dst := image.NewRGBA(image.Rect(0, 0, newW, newH))
-	xdraw.NearestNeighbor.Scale(dst, dst.Bounds(), img, bounds, xdraw.Over, nil)
-	return dst
-}
-
-// enhanceImage applies contrast enhancement to improve QR code readability.
-func enhanceImage(img image.Image) image.Image {
-	bounds := img.Bounds()
-	enhanced := image.NewRGBA(bounds)
-	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
-		for x := bounds.Min.X; x < bounds.Max.X; x++ {
-			r, g, b, a := img.At(x, y).RGBA()
-			gray := (r + g + b) / 3
-			// Apply contrast enhancement: if closer to white, make whiter; if closer to black, make blacker
-			if gray > 32768 {
-				gray = 65535
-			} else {
-				gray = 0
-			}
-			enhanced.Set(x, y, color.Gray16{uint16(gray)})
-			_ = a // preserve alpha if needed
-		}
-	}
-	return enhanced
+	// zbarimg --raw outputs the decoded text followed by a newline
+	result := out.String()
+	result = strings.TrimSuffix(result, "\n")
+	return result, nil
 }
 
 func writeFile(filename string, data []byte) error {

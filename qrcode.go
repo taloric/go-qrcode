@@ -297,6 +297,12 @@ func (q *QRCode) Image(size int) image.Image {
 
 	// Actual pixels available to draw the symbol. Automatically increase the
 	// image size if it's not large enough.
+	// Ensure minimum 10 pixels per module for reliable decoding
+	minSize := realSize * 10
+	if size < minSize {
+		size = minSize
+	}
+
 	if size < realSize {
 		size = realSize
 	}
